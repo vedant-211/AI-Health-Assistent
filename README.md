@@ -18,10 +18,6 @@ flutter pub get
 flutter run
 ```
 
-Honesty note
-This project includes code written by you and may have been implemented with guidance. Be transparent about any assistance when submitting to coursework.
-
-If you want, I can suggest how to split your work into logical commits and write a short author statement to include in the repository.
 
 # Medical App
 
