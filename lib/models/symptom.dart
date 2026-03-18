@@ -30,21 +30,3 @@ class SymptomModel {
     ];
   }
 }
-
-class DiagnosisResponse {
-  String condition;
-  String severity;
-  String description;
-  List<String> recommendations;
-  String urgency; // low, moderate, high, emergency
-  bool shouldConsultDoctor;
-
-  DiagnosisResponse({
-    required this.condition,
-    required this.severity,
-    required this.description,
-    required this.recommendations,
-    required this.urgency,
-    required this.shouldConsultDoctor
-  });
-}
