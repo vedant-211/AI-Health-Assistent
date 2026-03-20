@@ -1,8 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:medical/pages/home.dart';
+import 'package:medical/pages/auth_page.dart';
+import 'package:medical/services/auth_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'firebase_options.dart';
+import 'theme/app_styles.dart';
+import 'services/connectivity_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Load environment variables from .env file
+  await dotenv.load();
+  
+  // Firebase initialization
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    debugPrint('✅ Firebase initialized successfully');
+  } catch (e) {
+    debugPrint('❌ Firebase initialization error: $e');
+  }
+
+  // Start connection monitoring
+  ConnectivityService().startMonitoring();
+
   runApp(const MyApp());
 }
 
@@ -13,16 +39,80 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.leanBack);
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'SwasthMitra AI',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
-        fontFamily: 'Poppins'
+        scaffoldBackgroundColor: AppStyles.bgDark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: AppStyles.primaryBlue,
+          brightness: Brightness.dark,
+          surface: AppStyles.bgSurface,
+        ),
+        fontFamily: 'Poppins',
       ),
-      home: const HomePage()
+      home: const AuthWrapper(),
+      builder: (context, child) {
+        return Stack(
+          children: [
+            child!,
+            const Positioned(bottom: 0, left: 0, right: 0, child: ConnectionStatusBanner()),
+          ],
+        );
+      },
     );
   }
 }
 
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
 
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: AuthService().user,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.hasData) {
+          return const HomePage();
+        }
+        return const AuthPage();
+      },
+    );
+  }
+}
+
+class ConnectionStatusBanner extends StatelessWidget {
+  const ConnectionStatusBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<bool>(
+      stream: ConnectivityService().connectionStream,
+      initialData: ConnectivityService().isOnline,
+      builder: (context, snapshot) {
+        final isOnline = snapshot.data ?? true;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 500),
+          height: isOnline ? 0 : 40,
+          color: Colors.orangeAccent,
+          child: isOnline 
+            ? const SizedBox.shrink()
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.wifi_off_rounded, color: Colors.white, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Switching to offline mode...", 
+                    style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700, decoration: TextDecoration.none, fontFamily: 'Poppins')
+                  ),
+                ],
+              ),
+        );
+      },
+    );
+  }
+}
