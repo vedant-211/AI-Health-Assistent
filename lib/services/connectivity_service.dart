@@ -22,6 +22,15 @@ class ConnectivityService {
   }
 
   Future<bool> checkConnection() async {
+    // Step 6 Fix: Bypass ping on Web to avoid CORS errors
+    if (kIsWeb) {
+      if (!_isOnline) {
+        _isOnline = true;
+        _controller.add(true);
+      }
+      return true;
+    }
+
     try {
       final response = await http.get(Uri.parse('https://www.google.com')).timeout(const Duration(seconds: 3));
       final online = response.statusCode == 200;

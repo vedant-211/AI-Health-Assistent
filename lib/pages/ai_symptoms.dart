@@ -6,22 +6,34 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/user_model.dart';
+import '../models/family_member.dart';
+import '../services/firestore_service.dart';
 import 'package:medical/models/symptom.dart';
 import 'ai_diagnosis.dart';
 import '../theme/app_styles.dart';
+import 'package:lottie/lottie.dart';
+import '../providers/companion_provider.dart';
+import '../services/connectivity_service.dart';
 
-class AISymptomsPage extends StatefulWidget {
+class AISymptomsPage extends ConsumerStatefulWidget {
   const AISymptomsPage({super.key});
 
   @override
-  State<AISymptomsPage> createState() => _AISymptomsPageState();
+  ConsumerState<AISymptomsPage> createState() => _AISymptomsPageState();
 }
 
-class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStateMixin {
+class _AISymptomsPageState extends ConsumerState<AISymptomsPage> with TickerProviderStateMixin {
   final PageController _pageController = PageController();
   int _currentStep = 0;
   
   List<SymptomModel> symptoms = SymptomModel.getCommonSymptoms();
+  
+  // Family Selection State
+  bool _isSelf = true;
+  FamilyMember? _selectedFamilyMember;
+
   int selectedAge = 25;
   String selectedGender = 'Male';
   TextEditingController additionalInfoController = TextEditingController();
@@ -48,7 +60,22 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
     super.dispose();
   }
 
-  void _nextStep() { if (_currentStep < 2) _pageController.nextPage(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut); }
+  void _nextStep() { 
+    if (_currentStep < 2) {
+      _pageController.nextPage(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut); 
+      if (_currentStep == 0) {
+        ref.read(companionProvider.notifier).show(
+          message: "You're doing great, just one more step.",
+          emotion: CompanionEmotion.happy,
+        );
+      } else if (_currentStep == 1) {
+        ref.read(companionProvider.notifier).show(
+          message: "I'm here with you, let's check this together.",
+          emotion: CompanionEmotion.thinking,
+        );
+      }
+    }
+  }
   void _prevStep() { if (_currentStep > 0) _pageController.previousPage(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut); }
 
   Future<String?> _uploadImage(String userId) async {
@@ -69,6 +96,8 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
   }
 
   Future<void> _handleAnalyze() async {
+    FocusScope.of(context).unfocus(); // Critical fix for 51px bottom overflow when button is pressed while keyboard is open
+    
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -79,7 +108,35 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
 
     setState(() => _isLoading = true);
     final selectedNames = symptoms.where((s) => s.isSelected).map((s) => s.name).toList();
-    
+
+    if (!ConnectivityService().isOnline) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('You appear offline. Connect for a live AI review, or continue for offline-safe guidance using cached context.'),
+            backgroundColor: AppStyles.bgSurface,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Continue',
+              textColor: AppStyles.primaryBlue,
+              onPressed: () async {
+                if (!mounted) return;
+                setState(() => _isLoading = true);
+                await _proceedWithAnalysis(user, selectedNames);
+              },
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    await _proceedWithAnalysis(user, selectedNames);
+  }
+
+  Future<void> _proceedWithAnalysis(User user, List<String> selectedNames) async {
     try { 
       // Image upload with fallback & timeout
       String? imageUrl;
@@ -91,30 +148,39 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
         }
       }
 
+      final resolvedAge = _isSelf ? selectedAge : (_selectedFamilyMember?.age ?? selectedAge);
+      final resolvedGender = _isSelf ? selectedGender : (_selectedFamilyMember?.gender ?? selectedGender);
+      final famId = _isSelf ? null : _selectedFamilyMember?.id;
+      final famName = _isSelf ? null : _selectedFamilyMember?.name;
+
       // Record the report for history/audit (Non-blocking for better UX)
       FirebaseFirestore.instance.collection('symptom_reports').add({
         'userId': user.uid,
-        'age': selectedAge, 
-        'gender': selectedGender, 
+        'familyMemberId': famId,
+        'familyMemberName': famName,
+        'age': resolvedAge, 
+        'gender': resolvedGender, 
         'symptoms': selectedNames, 
         'additionalInfo': additionalInfoController.text, 
         'imageUrl': imageUrl,
         'timestamp': FieldValue.serverTimestamp()
-      }).timeout(const Duration(seconds: 15)).catchError((e) {
-        debugPrint('Audit report failed (non-blocking): $e');
-        return null; // Return null to complete the future
-      });
+      }).timeout(const Duration(seconds: 15)).then(
+        (_) {},
+        onError: (e) => debugPrint('Audit report failed (non-blocking): $e'),
+      );
 
       if (mounted) { 
         setState(() => _isLoading = false); 
         Navigator.push(context, MaterialPageRoute(builder: (context) => AIDiagnosisPage(
           symptoms: selectedNames, 
-          age: selectedAge, 
-          gender: selectedGender, 
+          age: resolvedAge, 
+          gender: resolvedGender, 
           additionalInfo: additionalInfoController.text, 
           symptomSeverity: symptomSeverity,
           userId: user.uid,
           imageUrl: imageUrl,
+          familyMemberId: famId,
+          familyMemberName: famName,
         ))); 
       }
     } catch (e) { 
@@ -142,9 +208,16 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
       backgroundColor: AppStyles.bgDark,
       appBar: AppBar(
         backgroundColor: AppStyles.bgDark, elevation: 0,
-        leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppStyles.textMain, size: 20), onPressed: _currentStep == 0 ? () => Navigator.pop(context) : _prevStep),
+        leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppStyles.textMain, size: 20), onPressed: _currentStep == 0 ? () => Navigator.pop(context) : _prevStep, tooltip: "Back"),
         title: _buildProgressIndicator(),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.home_rounded, color: AppStyles.primaryBlue, size: 26), 
+            onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+            tooltip: 'Return to Home',
+          ),
+        ]
       ),
       body: Stack(
         children: [
@@ -168,14 +241,20 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
 
   Widget _buildLoadingOverlay() {
     return Container(
-      color: Colors.black.withOpacity(0.8),
-      child: const Center(
+      color: Colors.black.withOpacity(0.85),
+      child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(color: AppStyles.primaryBlue),
-            SizedBox(height: 24),
-            Text("Preparing Clinical Review...", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            Lottie.asset(
+              'assets/lottie/companion_breathe.json',
+              width: 200, height: 200,
+              errorBuilder: (context, error, stackTrace) => const CircularProgressIndicator(color: AppStyles.primaryBlue),
+            ),
+            const SizedBox(height: 24),
+            const Text("Preparing Clinical Review...", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+            const SizedBox(height: 12),
+            const Text("Connecting emotionally & clinically...", style: TextStyle(color: AppStyles.textSecondary, fontSize: 13)),
           ],
         ),
       ),
@@ -200,29 +279,97 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
   }
 
   Widget _buildStep1() {
-    return Padding(
+    final firestoreService = ref.read(firestoreServiceProvider);
+    final user = FirebaseAuth.instance.currentUser;
+    
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text("1. Personal Details", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppStyles.textMain, letterSpacing: -1)),
           const SizedBox(height: 8),
-          const Text("Helps me understand you better as a companion.", style: TextStyle(color: AppStyles.textSecondary, fontSize: 13)),
+          const Text("Who is this clinical review for?", style: TextStyle(color: AppStyles.textSecondary, fontSize: 13)),
+          const SizedBox(height: 32),
+          
+          if (user != null)
+            StreamBuilder<UserModel?>(
+              stream: firestoreService.userProfileStream(user.uid),
+              builder: (context, snapshot) {
+                final userModel = snapshot.data;
+                final family = userModel?.familyMembers ?? [];
+                
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildFamilySelectorItem(true, null, "Myself"),
+                      ...family.map((f) => _buildFamilySelectorItem(false, f, f.name)).toList(),
+                    ],
+                  ),
+                );
+              },
+            ),
+
           const SizedBox(height: 48),
-          _sectionHeader("How old are you?", "Your age helps identify pattern risks"),
-          const SizedBox(height: 24),
-          _buildAgeSlider(),
-          const SizedBox(height: 48),
-          _sectionHeader("Gender identity", "Crucial for specific biological markers"),
-          const SizedBox(height: 24),
-          _buildGenderSelector(),
+          if (_isSelf) ...[
+            _sectionHeader("How old are you?", "Your age helps identify pattern risks"),
+            const SizedBox(height: 24),
+            _buildAgeSlider(),
+            const SizedBox(height: 48),
+            _sectionHeader("Gender identity", "Crucial for specific biological markers"),
+            const SizedBox(height: 24),
+            _buildGenderSelector(),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(color: AppStyles.primaryBlue.withOpacity(0.05), borderRadius: BorderRadius.circular(24), border: Border.all(color: AppStyles.primaryBlue.withOpacity(0.1))),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, color: AppStyles.primaryBlue, size: 24),
+                  const SizedBox(width: 16),
+                  Expanded(child: Text("Reviewing for ${_selectedFamilyMember?.name} (Age: ${_selectedFamilyMember?.age}, ${_selectedFamilyMember?.gender}). Medical history will be attached automatically.", style: const TextStyle(color: AppStyles.textMain, fontSize: 13, fontWeight: FontWeight.w600, height: 1.5))),
+                ],
+              ),
+            ),
+          ]
         ],
       ),
     );
   }
 
+  Widget _buildFamilySelectorItem(bool isSelfNode, FamilyMember? member, String title) {
+    final isSelected = isSelfNode ? _isSelf : (_selectedFamilyMember?.id == member?.id && !_isSelf);
+    
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _isSelf = isSelfNode;
+          _selectedFamilyMember = member;
+        });
+      },
+      child: AnimatedContainer(
+        duration: AppStyles.animationDuration,
+        margin: const EdgeInsets.only(right: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: isSelected ? AppStyles.primaryBlue : AppStyles.bgSurface,
+          borderRadius: BorderRadius.circular(20),
+          border: isSelected ? Border.all(color: AppStyles.primaryBlue) : AppStyles.glassBorder,
+        ),
+        child: Row(
+          children: [
+            Icon(isSelfNode ? Icons.person_rounded : Icons.group_rounded, color: isSelected ? Colors.white : AppStyles.textSecondary, size: 18),
+            const SizedBox(width: 8),
+            Text(title, style: TextStyle(color: isSelected ? Colors.white : AppStyles.textSecondary, fontWeight: isSelected ? FontWeight.w900 : FontWeight.w600, fontSize: 14)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildStep2() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,7 +378,7 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
           const SizedBox(height: 8),
           const Text("Select what you're noticing lately.", style: TextStyle(color: AppStyles.textSecondary, fontSize: 13)),
           const SizedBox(height: 40),
-          Expanded(child: SingleChildScrollView(child: _buildSymptomsGrid())),
+          _buildSymptomsGrid(),
         ],
       ),
     );
@@ -308,9 +455,11 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
   }
 
   Widget _buildGenderSelector() {
-    return Row(children: ['Male', 'Female', 'Other'].map((g) {
+    return Wrap(
+      spacing: 12, runSpacing: 12,
+      children: ['Male', 'Female', 'Other'].map((g) {
       final isSelected = selectedGender == g;
-      return Expanded(child: GestureDetector(onTap: () => setState(() => selectedGender = g), child: AnimatedContainer(duration: const Duration(milliseconds: 300), margin: const EdgeInsets.symmetric(horizontal: 4), padding: const EdgeInsets.symmetric(vertical: 20), decoration: BoxDecoration(color: isSelected ? AppStyles.primaryBlue : AppStyles.bgSurface, borderRadius: BorderRadius.circular(24), border: AppStyles.glassBorder), alignment: Alignment.center, child: Text(g, style: TextStyle(color: isSelected ? Colors.white : AppStyles.textSecondary, fontWeight: isSelected ? FontWeight.w900 : FontWeight.w600, fontSize: 14)))));
+      return GestureDetector(onTap: () => setState(() => selectedGender = g), child: AnimatedContainer(duration: const Duration(milliseconds: 300), padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 32), decoration: BoxDecoration(color: isSelected ? AppStyles.primaryBlue : AppStyles.bgSurface, borderRadius: BorderRadius.circular(24), border: AppStyles.glassBorder), child: Text(g, style: TextStyle(color: isSelected ? Colors.white : AppStyles.textSecondary, fontWeight: isSelected ? FontWeight.w900 : FontWeight.w600, fontSize: 14))));
     }).toList());
   }
 
@@ -335,7 +484,7 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
         children: [
           TextField(controller: additionalInfoController, maxLines: 5, style: const TextStyle(color: AppStyles.textMain, fontSize: 14), decoration: const InputDecoration(hintText: "How have you been feeling lately?", hintStyle: TextStyle(color: AppStyles.textSecondary, fontSize: 13), border: InputBorder.none)),
           const Divider(color: AppStyles.bgWhite, height: 32),
-          GestureDetector(onTap: _startVoiceInput, child: Container(padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20), decoration: BoxDecoration(color: AppStyles.primaryBlue.withOpacity(0.08), borderRadius: BorderRadius.circular(16)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.mic_rounded, color: AppStyles.primaryBlue, size: 20), SizedBox(width: 8), Text("Voice input", style: TextStyle(color: AppStyles.primaryBlue, fontWeight: FontWeight.w800, fontSize: 12))]))),
+          Semantics(button: true, label: "Start voice input", child: GestureDetector(onTap: _startVoiceInput, child: Container(padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20), decoration: BoxDecoration(color: AppStyles.primaryBlue.withOpacity(0.08), borderRadius: BorderRadius.circular(16)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.mic_rounded, color: AppStyles.primaryBlue, size: 20), SizedBox(width: 8), Text("Voice input", style: TextStyle(color: AppStyles.primaryBlue, fontWeight: FontWeight.w800, fontSize: 12))])))),
         ],
       ),
     );
@@ -344,7 +493,7 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
   Widget _buildPhotoSection() {
     return GestureDetector(
       onTap: () => _pickImage(ImageSource.gallery),
-      child: Container(width: double.infinity, height: 160, decoration: BoxDecoration(color: AppStyles.bgSurface, borderRadius: BorderRadius.circular(28), border: AppStyles.glassBorder), child: _selectedImage != null ? ClipRRect(borderRadius: BorderRadius.circular(28), child: Image.file(_selectedImage!, fit: BoxFit.cover)) : Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.add_photo_alternate_rounded, color: AppStyles.textSecondary, size: 32), const SizedBox(height: 8), Text("Camera context", style: TextStyle(color: AppStyles.textSecondary.withOpacity(0.5), fontSize: 12, fontWeight: FontWeight.w600))])),
+      child: Semantics(button: true, label: "Add photo", child: Container(width: double.infinity, height: 160, decoration: BoxDecoration(color: AppStyles.bgSurface, borderRadius: BorderRadius.circular(28), border: AppStyles.glassBorder), child: _selectedImage != null ? ClipRRect(borderRadius: BorderRadius.circular(28), child: Image.file(_selectedImage!, fit: BoxFit.cover)) : Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.add_photo_alternate_rounded, color: AppStyles.textSecondary, size: 32), const SizedBox(height: 8), Text("Camera context", style: TextStyle(color: AppStyles.textSecondary.withOpacity(0.5), fontSize: 12, fontWeight: FontWeight.w600))]))),
     );
   }
 
@@ -437,6 +586,7 @@ class _AISymptomsPageState extends State<AISymptomsPage> with TickerProviderStat
   }
 
   void _startVoiceInput() {
+    FocusScope.of(context).unfocus(); // Dismiss keyboard to prevent overlap
     setState(() => _isListening = true);
     // Simulate natural processing delay and audio-to-text conversion
     Timer(const Duration(milliseconds: 2800), () {
