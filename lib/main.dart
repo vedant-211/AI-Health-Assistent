@@ -2,19 +2,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:medical/pages/home.dart';
 import 'package:medical/pages/auth_page.dart';
 import 'package:medical/services/auth_service.dart';
+import 'package:medical/services/local_storage_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'theme/app_styles.dart';
 import 'services/connectivity_service.dart';
+import 'widgets/companion_overlay.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Load environment variables from .env file
   await dotenv.load();
+  
+  // Initialize Local Storage (Hive)
+  await LocalStorageService().init();
   
   // Firebase initialization
   try {
@@ -29,7 +35,7 @@ void main() async {
   // Start connection monitoring
   ConnectivityService().startMonitoring();
 
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
@@ -50,12 +56,22 @@ class MyApp extends StatelessWidget {
           surface: AppStyles.bgSurface,
         ),
         fontFamily: 'Poppins',
+        textTheme: Typography.whiteMountainView.apply(
+          fontFamily: 'Poppins',
+          bodyColor: AppStyles.textMain,
+          displayColor: AppStyles.textMain,
+        ).copyWith(
+          bodyLarge: const TextStyle(height: 1.45, letterSpacing: 0.1),
+          bodyMedium: const TextStyle(height: 1.45, letterSpacing: 0.1),
+          titleLarge: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.3),
+        ),
       ),
       home: const AuthWrapper(),
       builder: (context, child) {
         return Stack(
           children: [
             child!,
+            const GlobalCompanionOverlay(),
             const Positioned(bottom: 0, left: 0, right: 0, child: ConnectionStatusBanner()),
           ],
         );

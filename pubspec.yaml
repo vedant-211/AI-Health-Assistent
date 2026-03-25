@@ -16,7 +16,7 @@ dependencies:
 
   cupertino_icons: ^1.0.6
   flutter_svg: ^2.0.10+1
-  google_generative_ai: ^0.4.0
+
   http: ^1.1.0
   geolocator: ^9.0.2
   firebase_core: ^2.31.0
@@ -25,6 +25,11 @@ dependencies:
   firebase_storage: ^11.7.0
   image_picker: ^1.0.7
   flutter_dotenv: ^5.1.0
+  flutter_riverpod: ^2.5.1
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  uuid: ^4.5.3
+  lottie: ^3.3.2
 
 dev_dependencies:
   flutter_test:
@@ -40,6 +45,7 @@ flutter:
     - .env
     - assets/vectors/
     - assets/images/
+    - assets/lottie/
 
   fonts:
     - family: Poppins

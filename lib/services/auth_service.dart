@@ -1,9 +1,16 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'firestore_service.dart';
 import '../models/user_model.dart';
-import 'connectivity_service.dart';
+final authServiceProvider = Provider<AuthService>((ref) {
+  return AuthService();
+});
+
+final authStateProvider = StreamProvider<User?>((ref) {
+  return ref.watch(authServiceProvider).user;
+});
 
 // Auth result with error handling
 class AuthResult {
@@ -81,7 +88,9 @@ class AuthService {
       }
 
       return _retryWithBackoff(() async {
-        final credential = await _auth.signInWithEmailAndPassword(email: email, password: password);
+        final credential = await _auth
+            .signInWithEmailAndPassword(email: email, password: password)
+            .timeout(const Duration(seconds: 15)); // Step 5: Timeout
         debugPrint('✅ SignIn successful: ${credential.user?.email}');
         return AuthResult(credential: credential);
       });
@@ -106,7 +115,9 @@ class AuthService {
       }
 
       return _retryWithBackoff(() async {
-        UserCredential credential = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+        UserCredential credential = await _auth
+            .createUserWithEmailAndPassword(email: email, password: password)
+            .timeout(const Duration(seconds: 15)); // Step 5: Timeout
         debugPrint('✅ SignUp successful: ${credential.user?.email}');
         
         if (credential.user != null) {
@@ -117,11 +128,10 @@ class AuthService {
               email: email,
               name: name,
               createdAt: DateTime.now(),
-            ));
+            )).timeout(const Duration(seconds: 10)); // Timeout for Firestore too
             debugPrint('✅ User profile created in Firestore');
           } catch (firestoreError) {
-            debugPrint('⚠️ Firestore Sync Warning during signup: $firestoreError');
-            // Don't fail signup if Firestore fails - user is still authenticated
+            debugPrint('⚠️ Firestore Sync Warning during signup (non-blocking): $firestoreError');
           }
         }
         return AuthResult(credential: credential);

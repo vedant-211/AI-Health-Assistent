@@ -1,8 +1,15 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'local_storage_service.dart';
 import '../models/diagnosis_record.dart';
 import '../models/user_model.dart';
 import '../models/doctor.dart';
+
+final firestoreServiceProvider = Provider<FirestoreService>((ref) {
+  return FirestoreService();
+});
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -28,29 +35,47 @@ class FirestoreService {
     try {
       await _db.collection(userCollection).doc(user.uid).set(user.toMap(), SetOptions(merge: true));
     } catch (e) {
-      debugPrint('Firestore Error (createUserProfile): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (createUserProfile): $e');
       rethrow;
     }
   }
 
   Future<UserModel?> getUserProfile(String uid) async {
     try {
+      final cachedProfile = LocalStorageService().getCachedUserProfile(uid);
+      if (cachedProfile != null) {
+        _asyncFetchAndCacheProfile(uid); // Non-blocking sync
+        return UserModel.fromMap(uid, cachedProfile);
+      }
+      
       final doc = await _db.collection(userCollection).doc(uid).get(const GetOptions(source: Source.serverAndCache));
       if (doc.exists && doc.data() != null) {
+        await LocalStorageService().cacheUserProfile(uid, doc.data()!);
         return UserModel.fromMap(doc.id, doc.data()!);
       }
       return null;
     } catch (e) {
-      debugPrint('Firestore Error (getUserProfile): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (getUserProfile): $e');
+      final cachedProfile = LocalStorageService().getCachedUserProfile(uid);
+      if (cachedProfile != null) return UserModel.fromMap(uid, cachedProfile);
       return null;
     }
+  }
+
+  void _asyncFetchAndCacheProfile(String uid) async {
+    try {
+      final doc = await _db.collection(userCollection).doc(uid).get();
+      if (doc.exists && doc.data() != null) {
+        await LocalStorageService().cacheUserProfile(uid, doc.data()!);
+      }
+    } catch (_) {}
   }
 
   Future<void> updateUserProfile(String uid, Map<String, dynamic> data) async {
     try {
       await _db.collection(userCollection).doc(uid).update(data);
     } catch (e) {
-      debugPrint('Firestore Error (updateUserProfile): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (updateUserProfile): $e');
       rethrow;
     }
   }
@@ -59,17 +84,20 @@ class FirestoreService {
 
   Future<List<DoctorModel>> getDoctors({String? specialty}) async {
     try {
-      Query query = _db.collection(doctorCollection);
-      if (specialty != null && specialty != 'All') {
+      Query<Map<String, dynamic>> query = _db.collection(doctorCollection);
+      if (specialty != null && specialty.isNotEmpty && specialty != 'All') {
         query = query.where('specialties', arrayContains: specialty);
       }
-      
-      final snapshot = await query.get(const GetOptions(source: Source.server)).catchError((_) {
-        return query.get(const GetOptions(source: Source.cache));
-      });
-      return snapshot.docs.map((doc) => DoctorModel.fromMap(doc.id, doc.data() as Map<String, dynamic>)).toList();
+
+      QuerySnapshot<Map<String, dynamic>> snapshot;
+      try {
+        snapshot = await query.get(const GetOptions(source: Source.serverAndCache));
+      } catch (_) {
+        snapshot = await query.get(const GetOptions(source: Source.cache));
+      }
+      return snapshot.docs.map((doc) => DoctorModel.fromMap(doc.id, doc.data())).toList();
     } catch (e) {
-      debugPrint('Firestore Error (getDoctors): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (getDoctors): $e');
       return [];
     }
   }
@@ -86,7 +114,7 @@ class FirestoreService {
       }
       await batch.commit();
     } catch (e) {
-      debugPrint('Firestore Error (seedDoctors): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (seedDoctors): $e');
     }
   }
 
@@ -96,24 +124,55 @@ class FirestoreService {
     try {
       await _db.collection(diagnosisCollection).add(record.toMap());
     } catch (e) {
-      debugPrint('Firestore Error (saveDiagnosis): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (saveDiagnosis): $e');
       rethrow;
     }
   }
 
   Future<List<DiagnosisRecord>> getUserDiagnoses(String userId) async {
+    final cacheKey = 'diagnoses_$userId';
     try {
-      final snapshot = await _db.collection(diagnosisCollection)
-        .where('userId', isEqualTo: userId)
-        .orderBy('timestamp', descending: true)
-        .get()
-        .timeout(const Duration(seconds: 5));
-      
-      return snapshot.docs.map((doc) => DiagnosisRecord.fromMap(doc.id, doc.data())).toList();
+      final cachedData = LocalStorageService().getCachedList('diagnosisBox', cacheKey);
+      if (cachedData.isNotEmpty) {
+        _asyncSyncDiagnoses(userId, cacheKey);
+        // We cached maps with 'id' added inside.
+        return cachedData.map((e) => DiagnosisRecord.fromMap(e['id'] ?? '', e)).toList();
+      }
+
+      return await _fetchAndCacheDiagnoses(userId, cacheKey);
     } catch (e) {
-      debugPrint('Firestore Error (getUserDiagnoses): $e');
-      return [];
+      if (e is! TimeoutException) debugPrint('Firestore Error (getUserDiagnoses): $e');
+      final cachedData = LocalStorageService().getCachedList('diagnosisBox', cacheKey);
+      return cachedData.map((e) => DiagnosisRecord.fromMap(e['id'] ?? '', e)).toList();
     }
+  }
+
+  Future<List<DiagnosisRecord>> _fetchAndCacheDiagnoses(String userId, String cacheKey) async {
+    final snapshot = await _db.collection(diagnosisCollection)
+      .where('userId', isEqualTo: userId)
+      .orderBy('timestamp', descending: true)
+      .get()
+      .timeout(const Duration(seconds: 5));
+    
+    final records = snapshot.docs.map((doc) => DiagnosisRecord.fromMap(doc.id, doc.data())).toList();
+    
+    // add doc.id into the map so we can deserialize offline
+    final cacheableList = records.map((e) {
+      final map = e.toMap();
+      map['id'] = e.id; 
+      // timestamp needs to be saved properly for Hive dynamic serialization if using string mapping, 
+      // but Hive can store DateTime directly.
+      return map;
+    }).toList();
+    
+    await LocalStorageService().cacheList('diagnosisBox', cacheKey, cacheableList);
+    return records;
+  }
+
+  void _asyncSyncDiagnoses(String userId, String cacheKey) async {
+    try {
+      await _fetchAndCacheDiagnoses(userId, cacheKey);
+    } catch (_) {}
   }
 
   // --- Real-time Chat ---
@@ -127,7 +186,7 @@ class FirestoreService {
         'timestamp': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      debugPrint('Firestore Error (saveChatMessage): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (saveChatMessage): $e');
     }
   }
 
@@ -158,23 +217,41 @@ class FirestoreService {
         'createdAt': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      debugPrint('Firestore Error (bookAppointment): $e');
+      if (e is! TimeoutException) debugPrint('Firestore Error (bookAppointment): $e');
       rethrow;
     }
   }
 
   Future<List<Map<String, dynamic>>> getUserAppointments(String userId) async {
+    final cacheKey = 'appointments_$userId';
     try {
-      final snapshot = await _db.collection(appointmentCollection)
-        .where('userId', isEqualTo: userId)
-        .orderBy('createdAt', descending: true)
-        .get();
-      
-      return snapshot.docs.map((doc) => {'id': doc.id, ...doc.data()}).toList();
+      final cachedData = LocalStorageService().getCachedList('appointmentsBox', cacheKey);
+      if (cachedData.isNotEmpty) {
+        _asyncSyncAppointments(userId, cacheKey);
+        return cachedData;
+      }
+      return await _fetchAndCacheAppointments(userId, cacheKey);
     } catch (e) {
-      debugPrint('Firestore Error (getUserAppointments): $e');
-      return [];
+      if (e is! TimeoutException) debugPrint('Firestore Error (getUserAppointments): $e');
+      return LocalStorageService().getCachedList('appointmentsBox', cacheKey);
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchAndCacheAppointments(String userId, String cacheKey) async {
+    final snapshot = await _db.collection(appointmentCollection)
+      .where('userId', isEqualTo: userId)
+      .orderBy('createdAt', descending: true)
+      .get();
+    
+    final records = snapshot.docs.map((doc) => {'id': doc.id, ...doc.data()}).toList();
+    await LocalStorageService().cacheList('appointmentsBox', cacheKey, records);
+    return records;
+  }
+
+  void _asyncSyncAppointments(String userId, String cacheKey) async {
+    try {
+      await _fetchAndCacheAppointments(userId, cacheKey);
+    } catch (_) {}
   }
 }
 
