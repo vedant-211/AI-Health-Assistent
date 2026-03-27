@@ -1,21 +1,22 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/doctor.dart';
 import '../services/doctor_service.dart';
 import '../theme/app_styles.dart';
+import '../widgets/safe_asset_image.dart';
 import 'detail.dart';
 
-class NearbyDoctorsPage extends StatefulWidget {
-  final DoctorService service;
+class NearbyDoctorsPage extends ConsumerStatefulWidget {
   final String initialSpecialty;
   final String? searchQuery;
-  const NearbyDoctorsPage({super.key, required this.service, this.initialSpecialty = 'All', this.searchQuery});
+  const NearbyDoctorsPage({super.key, this.initialSpecialty = 'All', this.searchQuery});
 
   @override
-  State<NearbyDoctorsPage> createState() => _NearbyDoctorsPageState();
+  ConsumerState<NearbyDoctorsPage> createState() => _NearbyDoctorsPageState();
 }
 
-class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTickerProviderStateMixin {
+class _NearbyDoctorsPageState extends ConsumerState<NearbyDoctorsPage> with SingleTickerProviderStateMixin {
   List<DoctorModel> doctors = [];
   bool loading = true;
   String? error;
@@ -30,13 +31,13 @@ class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTicker
   }
 
   Future<void> _loadAndStartPolling() async {
-    await _loadDoctors();
+    await _loadDoctors(forceRefresh: false);
     _poller = Timer.periodic(const Duration(seconds: 60), (_) async {
-      await _loadDoctors();
+      await _loadDoctors(forceRefresh: false);
     });
   }
 
-  Future<void> _loadDoctors() async {
+  Future<void> _loadDoctors({required bool forceRefresh}) async {
     if (!mounted) return;
     setState(() {
       loading = true;
@@ -44,20 +45,18 @@ class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTicker
     });
 
     try {
-      final pos = await widget.service.getCurrentLocation();
-      final list = await widget.service.fetchNearbyDoctors(pos.latitude, pos.longitude);
-      if (!mounted) return;
+      final service = ref.read(doctorServiceProvider);
+      final list = await service.fetchFilteredDoctors(
+        lat: 19.0760,
+        lon: 72.8777,
+        specialty: widget.initialSpecialty == 'All' ? null : widget.initialSpecialty,
+        searchQuery: widget.searchQuery,
+        forceRefresh: forceRefresh,
+        narrowServerQuery: widget.initialSpecialty != 'All',
+      );
       if (!mounted) return;
       setState(() {
-        Iterable<DoctorModel> filtered = list;
-        if (widget.initialSpecialty != 'All') {
-          filtered = filtered.where((d) => d.specialties.contains(widget.initialSpecialty));
-        }
-        if (widget.searchQuery != null && widget.searchQuery!.isNotEmpty) {
-          final q = widget.searchQuery!.toLowerCase();
-          filtered = filtered.where((d) => d.name.toLowerCase().contains(q) || d.specialties.any((s) => s.toLowerCase().contains(q)));
-        }
-        doctors = filtered.toList();
+        doctors = list;
         loading = false;
       });
     } catch (e) {
@@ -80,6 +79,14 @@ class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTicker
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppStyles.bgLight,
+      floatingActionButton: loading
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () => _loadDoctors(forceRefresh: true),
+              backgroundColor: AppStyles.primaryBlue,
+              icon: const Icon(Icons.refresh_rounded, color: Colors.white),
+              label: const Text('Refresh', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+            ),
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -132,7 +139,27 @@ class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTicker
   }
 
   Widget _buildErrorState() {
-    return Center(child: Padding(padding: const EdgeInsets.all(40), child: Text('Failed to load: $error')));
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(40),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.cloud_off_rounded, color: AppStyles.textSecondary, size: 48),
+            const SizedBox(height: 16),
+            Text('Could not refresh specialists.', textAlign: TextAlign.center, style: TextStyle(color: AppStyles.textMain, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(error ?? '', textAlign: TextAlign.center, style: const TextStyle(color: AppStyles.textSecondary, fontSize: 12)),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: () => _loadDoctors(forceRefresh: true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppStyles.primaryBlue, foregroundColor: Colors.white),
+              child: const Text('Try again'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildList() {
@@ -158,13 +185,13 @@ class _NearbyDoctorsPageState extends State<NearbyDoctorsPage> with SingleTicker
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Container(
-                      width: 76,
-                      height: 76,
-                      decoration: BoxDecoration(
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        width: 76,
+                        height: 76,
                         color: AppStyles.bgWhite.withOpacity(0.5),
-                        borderRadius: BorderRadius.circular(20),
-                        image: DecorationImage(alignment: Alignment.bottomCenter, image: AssetImage(d.image)),
+                        child: SafeNetworkOrAssetImage(path: d.image, fit: BoxFit.cover, alignment: Alignment.bottomCenter),
                       ),
                     ),
                     const SizedBox(width: 16),

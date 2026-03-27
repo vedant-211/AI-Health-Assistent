@@ -1,7 +1,8 @@
+import 'dart:ui';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:medical/pages/detail.dart';
 import 'package:medical/pages/ai_symptoms.dart';
 import 'package:medical/pages/nearby_doctors.dart';
@@ -11,17 +12,20 @@ import 'package:medical/models/user_model.dart';
 import '../models/category.dart';
 import '../models/doctor.dart';
 import '../theme/app_styles.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lottie/lottie.dart';
+import 'package:medical/widgets/safe_asset_image.dart';
+import 'package:medical/widgets/safe_svg_asset.dart';
 
 
-class HomePage extends StatefulWidget {
+class HomePage extends ConsumerStatefulWidget {
    const HomePage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  ConsumerState<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  final FirestoreService _firestoreService = FirestoreService();
+class _HomePageState extends ConsumerState<HomePage> with TickerProviderStateMixin {
   final List<CategoryModel> categoriesData = CategoryModel.getCategories();
   
   List<DoctorModel> _doctors = [];
@@ -37,14 +41,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _loadSpecialists();
   }
 
-  Future<void> _loadSpecialists() async {
+  Future<void> _loadSpecialists({bool forceRefresh = false}) async {
     try {
-      var list = await _firestoreService.getDoctors();
-      if (list.isEmpty) {
-        // Optimistic Seeding: If empty, seed and try again
-        await _firestoreService.seedDoctors();
-        list = await _firestoreService.getDoctors();
-      }
+      final docService = ref.read(doctorServiceProvider);
+      final list = await docService.fetchFilteredDoctors(
+        lat: 19.0760,
+        lon: 72.8777,
+        forceRefresh: forceRefresh,
+      );
       if (mounted) {
         setState(() { 
           _doctors = list; 
@@ -79,13 +83,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final firestoreService = ref.read(firestoreServiceProvider);
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
 
     return Scaffold(
       backgroundColor: AppStyles.bgDark,
       body: StreamBuilder<UserModel?>(
-        stream: _firestoreService.userProfileStream(user.uid),
+        stream: firestoreService.userProfileStream(user.uid),
         builder: (context, userSnapshot) {
           if (userSnapshot.hasError) return _buildGlobalError("Profile synchronization failed", _loadSpecialists);
           final userModel = userSnapshot.data;
@@ -93,7 +98,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           final selectedCategory = categoriesData.firstWhere((c) => c.isSelected, orElse: () => categoriesData.first).name;
 
           return StreamBuilder<List<Map<String, dynamic>>>(
-            stream: _firestoreService.userAppointmentsStream(user.uid),
+            stream: firestoreService.userAppointmentsStream(user.uid),
             builder: (context, journeySnapshot) {
               if (journeySnapshot.hasError) {
                 return _buildGlobalError("Clinical journey sync issue. Check Firestore indexes.", _loadSpecialists);
@@ -111,7 +116,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                   
                   RefreshIndicator(
-                    onRefresh: _loadSpecialists,
+                    onRefresh: () => _loadSpecialists(forceRefresh: true),
                     color: AppStyles.primaryBlue,
                     backgroundColor: AppStyles.bgSurface,
                     child: SingleChildScrollView(
@@ -139,7 +144,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                  categories(),
                                  const SizedBox(height: 48),
                                  _sectionHeader("Top Specialists", selectedCategory == 'All' ? "Trusted experts for you" : "Experts in $selectedCategory", onSeeAll: () {
-                                   Navigator.push(context, MaterialPageRoute(builder: (context) => NearbyDoctorsPage(service: DoctorService(), initialSpecialty: selectedCategory)));
+                                   Navigator.push(context, MaterialPageRoute(builder: (context) => NearbyDoctorsPage(initialSpecialty: selectedCategory)));
                                  }),
                                  const SizedBox(height: 24),
                                  doctors(specialty: selectedCategory),
@@ -241,31 +246,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final score = user?.healthScore.toDouble() ?? 80.0;
     return GestureDetector(
       onTap: () => _showHealthAnalysis(context, score),
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(color: AppStyles.bgSurface, borderRadius: BorderRadius.circular(28), border: AppStyles.glassBorder),
-        child: Row(
-          children: [
-            Stack(
-              alignment: Alignment.center,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppStyles.bgSurface.withOpacity(0.72),
+              borderRadius: BorderRadius.circular(28),
+              border: AppStyles.glassBorder,
+              gradient: AppStyles.glassGradient,
+            ),
+            child: Row(
               children: [
-                SizedBox(width: 50, height: 50, child: CircularProgressIndicator(value: score / 100, strokeWidth: 5, backgroundColor: AppStyles.bgLight, valueColor: const AlwaysStoppedAnimation<Color>(AppStyles.primaryBlue), strokeCap: StrokeCap.round)),
-                Text(score.toInt().toString(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppStyles.primaryBlue)),
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(width: 50, height: 50, child: CircularProgressIndicator(value: score / 100, strokeWidth: 5, backgroundColor: AppStyles.bgLight, valueColor: const AlwaysStoppedAnimation<Color>(AppStyles.primaryBlue), strokeCap: StrokeCap.round)),
+                    Text(score.toInt().toString(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppStyles.primaryBlue)),
+                  ],
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("Health Score", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppStyles.textMain)),
+                      const SizedBox(height: 2),
+                      Text("Your health is looking stable today, ${user?.name ?? 'Guest'}.", style: const TextStyle(fontSize: 12, color: AppStyles.textSecondary)),
+                    ],
+                  ),
+                ),
+                Icon(Icons.insights_rounded, color: AppStyles.primaryBlue.withOpacity(0.3), size: 20),
               ],
             ),
-            const SizedBox(width: 20),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text("Health Score", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppStyles.textMain)),
-                  const SizedBox(height: 2),
-                  Text("Your health is looking stable today, ${user?.name ?? 'Guest'}.", style: const TextStyle(fontSize: 12, color: AppStyles.textSecondary)),
-                ],
-              ),
-            ),
-            Icon(Icons.insights_rounded, color: AppStyles.primaryBlue.withOpacity(0.3), size: 20),
-          ],
+          ),
         ),
       ),
     );
@@ -341,7 +357,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("${_getGreeting()},", style: const TextStyle(color: AppStyles.textSecondary, fontSize: 13, fontWeight: FontWeight.w500)), Text(user?.name ?? 'Guest', style: const TextStyle(color: AppStyles.textMain, fontSize: 24, fontWeight: FontWeight.w900, letterSpacing: -1))]),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text("${_getGreeting()},", style: const TextStyle(color: AppStyles.textSecondary, fontSize: 13, fontWeight: FontWeight.w500)), 
+                  Text(user?.name ?? 'Guest', style: const TextStyle(color: AppStyles.textMain, fontSize: 24, fontWeight: FontWeight.w900, letterSpacing: -1, overflow: TextOverflow.ellipsis))
+                ]),
+              ),
               GestureDetector(
                 onTap: () {
                    showDialog(
@@ -360,12 +381,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                      ),
                    );
                 },
-                child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppStyles.bgSurface, shape: BoxShape.circle, border: AppStyles.glassBorder), child: CircleAvatar(radius: 20, backgroundColor: AppStyles.primaryBlue.withOpacity(0.1), child: const Icon(Icons.face_unlock_rounded, color: AppStyles.primaryBlue, size: 22))),
+                child: Semantics(button: true, label: "Profile Options", child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppStyles.bgSurface, shape: BoxShape.circle, border: AppStyles.glassBorder), child: CircleAvatar(radius: 20, backgroundColor: AppStyles.primaryBlue.withOpacity(0.1), child: const Icon(Icons.face_unlock_rounded, color: AppStyles.primaryBlue, size: 22)))),
               )
             ]),
 
             const SizedBox(height: 32),
-            const Text("Your family's\nhealth partner.", style: TextStyle(color: AppStyles.textMain, fontSize: 32, height: 1.1, fontWeight: FontWeight.w900, letterSpacing: -1.5)),
+            ShaderMask(
+              blendMode: BlendMode.srcIn,
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [Color(0xffF8FAFC), Color(0xffC4B5FD)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ).createShader(bounds),
+              child: const Text("Your family's\nhealth partner.", style: TextStyle(color: Colors.white, fontSize: 32, height: 1.1, fontWeight: FontWeight.w900, letterSpacing: -1.5)),
+            ),
             const SizedBox(height: 24),
             _searchBarMinimal(),
           ],
@@ -381,7 +410,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       child: TextField(
         onSubmitted: (v) {
           if (v.trim().isNotEmpty) {
-            Navigator.push(context, MaterialPageRoute(builder: (context) => NearbyDoctorsPage(service: DoctorService(), initialSpecialty: 'All', searchQuery: v.trim())));
+            Navigator.push(context, MaterialPageRoute(builder: (context) => NearbyDoctorsPage(initialSpecialty: 'All', searchQuery: v.trim())));
           }
         },
         style: const TextStyle(color: AppStyles.textMain), 
@@ -425,10 +454,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                            color: AppStyles.primaryBlue.withOpacity(0.15 * _aliveController.value),
                          ),
                        ),
-                       Container(
-                         width: 64, height: 64,
-                         decoration: const BoxDecoration(gradient: AppStyles.primaryGradient, shape: BoxShape.circle),
-                         child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 28),
+                       Lottie.asset(
+                         'assets/lottie/companion_breathe.json',
+                         width: 100, height: 100,
+                         errorBuilder: (context, error, stackTrace) => Container(
+                           width: 64, height: 64,
+                           decoration: const BoxDecoration(gradient: AppStyles.primaryGradient, shape: BoxShape.circle),
+                           child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 28),
+                         ),
                        ),
                      ],
                    ),
@@ -462,7 +495,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         itemBuilder: (context, index) {
           final isSelected = categoriesData[index].isSelected;
           return Column(children: [
-            GestureDetector(onTap: () { setState(() { for(var item in categoriesData) item.isSelected = false; categoriesData[index].isSelected = true; }); }, child: AnimatedContainer(duration: AppStyles.animationDuration, width: 68, height: 68, decoration: BoxDecoration(color: isSelected ? AppStyles.primaryBlue.withOpacity(0.1) : AppStyles.bgSurface, borderRadius: BorderRadius.circular(22), border: isSelected ? Border.all(color: AppStyles.primaryBlue, width: 2) : AppStyles.glassBorder), child: Center(child: SvgPicture.asset(categoriesData[index].vector, width: 26, height: 26, colorFilter: ColorFilter.mode(isSelected ? AppStyles.primaryBlue : AppStyles.textSecondary, BlendMode.srcIn))))),
+            GestureDetector(onTap: () {
+              setState(() {
+                for (var item in categoriesData) item.isSelected = false;
+                categoriesData[index].isSelected = true;
+              });
+              _loadSpecialists(forceRefresh: true);
+            }, child: AnimatedContainer(duration: AppStyles.animationDuration, width: 68, height: 68, decoration: BoxDecoration(color: isSelected ? AppStyles.primaryBlue.withOpacity(0.1) : AppStyles.bgSurface, borderRadius: BorderRadius.circular(22), border: isSelected ? Border.all(color: AppStyles.primaryBlue, width: 2) : AppStyles.glassBorder), child: Center(child: SafeSvgAsset(assetPath: categoriesData[index].vector, width: 26, height: 26, colorFilter: ColorFilter.mode(isSelected ? AppStyles.primaryBlue : AppStyles.textSecondary, BlendMode.srcIn))))),
             const SizedBox(height: 8),
             Text(categoriesData[index].name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500, color: isSelected ? AppStyles.primaryBlue : AppStyles.textSecondary)),
           ]);
@@ -521,7 +560,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                               Text(doc.name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppStyles.textMain, letterSpacing: -0.5)),
+                               Expanded(child: Text(doc.name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppStyles.textMain, letterSpacing: -0.5, overflow: TextOverflow.ellipsis))),
                                _availabilityIndicator(doc.isCurrentlyAvailable),
                             ],
                           ),
@@ -540,14 +579,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         );
       },
       separatorBuilder: (context, index) => const SizedBox(height: 16),
-      itemCount: _doctors.length,
+      itemCount: filteredDoctors.length,
     );
   }
 
   Widget _doctorImage(DoctorModel doc) {
     return Container(
       width: 70, height: 70,
-      decoration: BoxDecoration(color: AppStyles.bgLight, borderRadius: BorderRadius.circular(16), image: DecorationImage(alignment: Alignment.bottomCenter, image: AssetImage(doc.image))),
+      decoration: BoxDecoration(color: AppStyles.bgLight, borderRadius: BorderRadius.circular(16)),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: SafeNetworkOrAssetImage(path: doc.image, fit: BoxFit.cover, alignment: Alignment.bottomCenter),
+      ),
     );
   }
 

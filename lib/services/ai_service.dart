@@ -61,7 +61,7 @@ class AIService {
           if (jsonMode) 'response_format': {'type': 'json_object'},
           'temperature': 0.5,
         }),
-      ).timeout(const Duration(seconds: 25));
+      ).timeout(const Duration(seconds: 60));
 
       if (response.statusCode != 200) {
         debugPrint('OpenRouter API Error (${response.statusCode}): ${response.body}');

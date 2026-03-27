@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:medical/models/doctor.dart';
 import 'package:medical/services/firestore_service.dart';
 import '../theme/app_styles.dart';
+import '../widgets/safe_asset_image.dart';
 
-class DetailPage extends StatefulWidget {
+class DetailPage extends ConsumerStatefulWidget {
   final DoctorModel doctorModel;
   const DetailPage({
     required this.doctorModel,
@@ -13,11 +15,10 @@ class DetailPage extends StatefulWidget {
   });
 
   @override
-  State<DetailPage> createState() => _DetailPageState();
+  ConsumerState<DetailPage> createState() => _DetailPageState();
 }
 
-class _DetailPageState extends State<DetailPage> {
-  final FirestoreService _firestoreService = FirestoreService();
+class _DetailPageState extends ConsumerState<DetailPage> {
   List<CalendarModel> calendarData = [];
   List<TimeModel> timeData = [];
   bool _isBooking = false;
@@ -58,7 +59,13 @@ class _DetailPageState extends State<DetailPage> {
                         color: Colors.white.withOpacity(0.1),
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white.withOpacity(0.15), width: 3),
-                        image: DecorationImage(alignment: Alignment.bottomCenter, image: AssetImage(widget.doctorModel.image)),
+                      ),
+                      child: ClipOval(
+                        child: SafeNetworkOrAssetImage(
+                          path: widget.doctorModel.image,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.bottomCenter,
+                        ),
                       ),
                     ),
                   ),
@@ -235,7 +242,8 @@ class _DetailPageState extends State<DetailPage> {
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       };
 
-      await _firestoreService.bookAppointment(user.uid, appointmentData).timeout(const Duration(seconds: 10));
+      final firestoreService = ref.read(firestoreServiceProvider);
+      await firestoreService.bookAppointment(user.uid, appointmentData).timeout(const Duration(seconds: 10));
 
       if (mounted) {
         // Authentic Pacing: Let the user feel the "Success"

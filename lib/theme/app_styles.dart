@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 
 class AppStyles {
-  // Soft Dark Palette
-  static const Color bgDark = Color(0xff0F172A); // Deep Slate
-  static const Color bgSurface = Color(0xff1E293B); // Muted Blue Surface
-  static const Color bgLight = Color(0xff334155); // Elevated Surface
-  static const Color primaryBlue = Color(0xff51A8FF);
-  static const Color accentBlue = Color(0xff38B2AC); // Tealish accent for health
+  // Moonly / Kurzgesagt Soft Dark Palette
+  static const Color bgDark = Color(0xff0B0816); // Deep Space
+  static const Color bgSurface = Color(0xff1A1625); // Elevated Dark Purple
+  static const Color bgLight = Color(0xff2A2438); // Lighter Surface
+  static const Color primaryBlue = Color(0xff8B5CF6); // Renamed conceptually to primaryViolet
+  static const Color accentBlue = Color(0xffFDA4AF); // Soft glowing pink
   static const Color textMain = Color(0xffF8FAFC); // Almost white
-  static const Color textSecondary = Color(0xff94A3B8); // Muted grey-blue
-  static const Color bgWhite = Color(0xff1E293B); // Redirect white components to surface
-  static const Color greyAccent = Color(0xff64748B); // Soft neutral - muted slate tone
+  static const Color textSecondary = Color(0xffA78BFA); // Soft purple grey
+  static const Color bgWhite = Color(0xff1A1625); // Redirect white components to surface
+  static const Color greyAccent = Color(0xff4C1D95); // Deep accent tone
 
   // Animation Constants
   static const Duration animationDuration = Duration(milliseconds: 300);
@@ -58,9 +58,18 @@ class AppStyles {
     )
   ];
 
+  static List<BoxShadow> glowShadow = [
+    BoxShadow(
+      color: primaryBlue.withOpacity(0.35),
+      blurRadius: 30,
+      offset: const Offset(0, 8),
+      spreadRadius: -5,
+    )
+  ];
+
   // Signature Identity (Subtle Dark Glows)
   static const Gradient auraBlue = RadialGradient(
-    colors: [Color(0x1a51A8FF), Colors.transparent],
+    colors: [Color(0x338B5CF6), Colors.transparent], // Soft purple aura
     radius: 0.8,
   );
 
@@ -74,8 +83,8 @@ class AppStyles {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
     colors: [
-      Color(0xff1E293B),
-      Color(0xff0F172A),
+      Color(0xff8B5CF6), // Vibrant purple
+      Color(0xff4C1D95), // Deep purple
     ],
   );
 
@@ -83,8 +92,8 @@ class AppStyles {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
     colors: [
-      const Color(0xff51A8FF).withOpacity(0.15),
-      const Color(0xff2563EB).withOpacity(0.1),
+      const Color(0xff8B5CF6).withOpacity(0.15),
+      const Color(0xffFDA4AF).withOpacity(0.1),
     ],
   );
 

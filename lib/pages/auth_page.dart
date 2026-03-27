@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../theme/app_styles.dart';
+import '../services/connectivity_service.dart';
+import 'dart:async';
 
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
@@ -17,7 +19,15 @@ class _AuthPageState extends State<AuthPage> {
   bool _isLoading = false;
 
   void _handleAuth() async {
-    setState(() => _isLoading = true);
+    // Step 6: Network Failure Handling
+    if (!ConnectivityService().isOnline) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Please check your internet connection."),
+        backgroundColor: Color(0xFFDC2626),
+      ));
+      return;
+    }
+
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
@@ -26,17 +36,20 @@ class _AuthPageState extends State<AuthPage> {
         content: Text("Please fill all fields"),
         backgroundColor: Color(0xFFDC2626),
       ));
-      setState(() => _isLoading = false);
       return;
     }
 
-    final result = _isLogin 
-      ? await _auth.signIn(email, password)
-      : await _auth.signUp(email, password);
+    setState(() => _isLoading = true); // Step 3 & 8: Loading starts & button disables
 
-    if (mounted) {
+    try {
+      final result = _isLogin 
+        ? await _auth.signIn(email, password)
+        : await _auth.signUp(email, password);
+
+      if (!mounted) return;
+
       if (result.error != null) {
-        // Display precise error from AuthService
+        // Step 4: Show user-friendly messages
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Row(
             children: [
@@ -51,12 +64,21 @@ class _AuthPageState extends State<AuthPage> {
           duration: const Duration(seconds: 4),
         ));
       } else {
-        // Success - redirect to home
-        Navigator.of(context).pushReplacementNamed('/home');
+        // Step 7: Navigation is handled by AuthWrapper reactive logic (StreamBuilder)
+        // No manual navigation to /home which was missing routes.
+        debugPrint('Auth successful: ${result.credential?.user?.email}');
       }
-      setState(() => _isLoading = false);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Auth Error: ${e.toString()}"),
+          backgroundColor: const Color(0xFFDC2626),
+        ));
+      }
+    } finally {
+      // Step 3: MUST reset in finally block to prevent infinite loading
+      if (mounted) setState(() => _isLoading = false);
     }
-
   }
 
   @override

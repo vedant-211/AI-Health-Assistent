@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class DiagnosisRecord {
   final String id;
   final String userId;
+  final String? familyMemberId;
+  final String? familyMemberName;
   final String condition;
   final String severity;
   final String description;
@@ -14,6 +16,8 @@ class DiagnosisRecord {
   DiagnosisRecord({
     required this.id,
     required this.userId,
+    this.familyMemberId,
+    this.familyMemberName,
     required this.condition,
     required this.severity,
     required this.description,
@@ -26,6 +30,8 @@ class DiagnosisRecord {
   Map<String, dynamic> toMap() {
     return {
       'userId': userId,
+      'familyMemberId': familyMemberId,
+      'familyMemberName': familyMemberName,
       'condition': condition,
       'severity': severity,
       'description': description,
@@ -40,6 +46,8 @@ class DiagnosisRecord {
     return DiagnosisRecord(
       id: id,
       userId: map['userId'] ?? '',
+      familyMemberId: map['familyMemberId'],
+      familyMemberName: map['familyMemberName'],
       condition: map['condition'] ?? '',
       severity: map['severity'] ?? '',
       description: map['description'] ?? '',

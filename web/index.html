@@ -31,6 +31,28 @@
 
   <title>medical</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Firebase SDK (MUST be before flutter_bootstrap.js) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-storage-compat.js"></script>
+
+  <script>
+    // Initialize Firebase IMMEDIATELY
+    const firebaseConfig = {
+      apiKey: "AIzaSyAk2nQNorwJsNiuaab9EVyR7vN-PQic730",
+      authDomain: "gen-lang-client-0543931071.firebaseapp.com",
+      projectId: "gen-lang-client-0543931071",
+      storageBucket: "gen-lang-client-0543931071.firebasestorage.app",
+      messagingSenderId: "23121684195",
+      appId: "1:23121684195:web:28d80bfd7bc8562825c7d6"
+    };
+    if (typeof firebase !== 'undefined') {
+      firebase.initializeApp(firebaseConfig);
+      console.log('✅ Firebase initialized in HTML');
+    }
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

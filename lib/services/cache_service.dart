@@ -1,4 +1,3 @@
-import 'dart:async';
 import '../models/doctor.dart';
 import '../models/diagnosis_response.dart';
 
