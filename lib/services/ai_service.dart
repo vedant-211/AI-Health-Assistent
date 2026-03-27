@@ -1,62 +1,107 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/diagnosis_response.dart';
 import '../services/firestore_service.dart';
 import '../models/diagnosis_record.dart';
 
+import 'local_storage_service.dart';
+
+final aiServiceProvider = Provider<AIService>((ref) {
+  return AIService(ref);
+});
+
 class CompanionSession {
   final List<String> symptoms;
   final String diagnosis;
-  final List<Map<String, String>> history; 
-  final List<String> clinicalNotes; 
+  final List<Map<String, String>> history;
+  final List<String> clinicalNotes;
   String userName;
   final String userId;
 
   CompanionSession({
     required this.symptoms,
     required this.diagnosis,
-    this.history = const [],
-    this.clinicalNotes = const [],
+    List<Map<String, String>>? history,
+    List<String>? clinicalNotes,
     this.userName = "Vedant",
     required this.userId,
-  });
+  })  : history = history ?? [],
+        clinicalNotes = clinicalNotes ?? [];
 }
 
 class AIService {
-  late GenerativeModel model;
   final FirestoreService firestoreService = FirestoreService();
+  final Ref ref;
 
-  AIService() {
-    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    if (apiKey.isEmpty) {
-      throw Exception('GEMINI_API_KEY not found in environment variables. Please check your .env file.');
+  final String _apiKey;
+  static const String _baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  static const String _model = 'openrouter/free';
+
+  AIService(this.ref) : _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+
+  Future<String> _callOpenRouter(List<Map<String, String>> messages, {bool jsonMode = false}) async {
+    if (_apiKey.isEmpty) throw StateError('GEMINI_API_KEY missing');
+
+    try {
+      final response = await http.post(
+        Uri.parse(_baseUrl),
+        headers: {
+          'Authorization': 'Bearer $_apiKey',
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://swasthmitra.ai', 
+          'X-Title': 'SwasthMitra AI',
+        },
+        body: jsonEncode({
+          'model': _model,
+          'messages': messages,
+          if (jsonMode) 'response_format': {'type': 'json_object'},
+          'temperature': 0.5,
+        }),
+      ).timeout(const Duration(seconds: 60));
+
+      if (response.statusCode != 200) {
+        debugPrint('OpenRouter API Error (${response.statusCode}): ${response.body}');
+        return "";
+      }
+
+      final data = jsonDecode(response.body);
+      if (data['choices'] != null && data['choices'].isNotEmpty) {
+        return data['choices'][0]['message']['content'] ?? "";
+      }
+      return "";
+    } catch (e) {
+      debugPrint('OpenRouter/Network Error: $e');
+      return "";
     }
-    model = GenerativeModel(
-      model: 'gemini-2.0-flash', 
-      apiKey: apiKey,
-      generationConfig: GenerationConfig(
-        temperature: 0.1, 
-        topP: 0.95,
-        topK: 40,
-      ),
-    );
   }
 
-  Future<GenerateContentResponse> _retryWithBackoff(Future<GenerateContentResponse> Function() action, {int maxRetries = 2}) async {
-    int retryCount = 0;
-    while (retryCount < maxRetries) {
-      try {
-        return await action();
-      } catch (e) {
-        retryCount++;
-        debugPrint('🔄 Retrying AI action (Attempt $retryCount/$maxRetries)... $e');
-        if (retryCount >= maxRetries) rethrow;
-        await Future.delayed(Duration(seconds: 2 * retryCount));
+  static String _sanitizeText(String? input, {int maxLen = 6000}) {
+    if (input == null) return '';
+    var s = input.trim();
+    s = s.replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+    if (s.length > maxLen) {
+      s = s.substring(0, maxLen);
+    }
+    return s;
+  }
+
+
+
+
+
+  Future<void> _persistChatMessages(String userId, String userText, String botText) async {
+    try {
+      await firestoreService.saveChatMessage(userId, 'user', userText).timeout(const Duration(seconds: 4));
+      await firestoreService.saveChatMessage(userId, 'bot', botText).timeout(const Duration(seconds: 4));
+    } catch (e) {
+      if (e is! TimeoutException) {
+        debugPrint('Chat persistence (non-blocking): $e');
       }
     }
-    return action();
   }
 
   Future<DiagnosisResponse> analyzeSymptoms({
@@ -68,89 +113,39 @@ class AIService {
     String? additionalInfo,
     String? imageUrl,
     String userName = "Vedant",
+    String? familyMemberId,
+    String? familyMemberName,
   }) async {
     try {
+      if (_apiKey.isEmpty) return _getFallbackDiagnosis(userName);
       final historyRecords = await firestoreService.getUserDiagnoses(userId);
-      final historySummary = historyRecords.take(3).map((r) {
-        return "- ${r.condition} (${r.severity}) on ${r.timestamp.toString().split(' ').first}";
-      }).join("\n");
-      
-      final symptomList = symptoms.join(', ');
-      
+      final historySummary = historyRecords.take(3).map((r) => "- ${r.condition} (${r.severity}) on ${r.timestamp.toString().split(' ').first}").join('\n');
       final prompt = '''
-      SYSTEM: You are "SwasthMitra", your personal health companion. You act as a compassionate, expert healthcare partner who speaks like a warm therapist.
-      
-      TONE & STYLE:
-      - Use simple, everyday language. Avoid medical jargon entirely.
-      - Speak with deep compassion and empathy (e.g., "I hear you," "I understand this might feel stressful").
-      - Be reassuring but clinically honest.
-      - Act as a supportive therapeutic guide who explains things in human terms.
-      
-      ADAPTIVE VOICES:
-      - "Steadfast Guardian": Calm and focused for urgent needs.
-      - "Compassionate Peer": Gentle and relatable for mild concerns.
-      - "Supportive Mentor": Educational and encouraging.
-
-      CONTEXT:
-      - USER: $userName (Age: $age, Gender: $gender)
-      - SYMPTOMS: $symptomList
-      - ADDITIONAL CONTEXT: ${additionalInfo ?? "None provided"}
-      - PAST HISTORY: $historySummary
-
-      STRICT JSON SCHEMA:
-      {
-        "condition": "Simple, non-scary name for the condition",
-        "severity": "mild" | "moderate" | "severe",
-        "emotional_analysis": "How the user seems to be feeling (Short)",
-        "persona_reflection": "Why you chose this specific tone for $userName",
-        "description": "3 sentences maximum. Use extreme compassion, simple terms, and a therapist-like warmth.",
-        "recommendations": ["Simple action 1", "Simple action 2", "Simple action 3"],
-        "urgency": "low" | "moderate" | "high" | "emergency",
-        "suggested_specialty": "Medical specialty",
-        "shouldConsultDoctor": boolean,
-        "isEmergency": boolean,
-        "clinical_notes": ["1 key summary for historical context"]
-      }
-      ''';
-
-      final response = await _retryWithBackoff(() => model.generateContent([Content.text(prompt)]));
-      final jsonString = _extractJson(response.text ?? '');
-      
-      if (jsonString.isEmpty) return _getFallbackDiagnosis(userName);
-      
-      final diagnosis = _parseResponse(jsonString, userName);
-      
-      await firestoreService.saveDiagnosis(DiagnosisRecord(
-        id: "",
-        userId: userId,
-        condition: diagnosis.condition,
-        severity: diagnosis.severity,
-        description: diagnosis.description,
-        recommendations: diagnosis.recommendations,
-        timestamp: DateTime.now(),
-        symptoms: symptoms,
-        imageUrl: imageUrl,
-      )).timeout(const Duration(seconds: 10)).catchError((e) {
-        debugPrint('Failed to save diagnosis record (non-blocking): $e');
-      });
-
-      try {
-        final profile = await firestoreService.getUserProfile(userId).timeout(const Duration(seconds: 5));
-        if (profile != null) {
-          int decrement = (diagnosis.urgency.toLowerCase() == 'low') ? 2 :
-                          (diagnosis.urgency.toLowerCase() == 'moderate') ? 5 :
-                          (diagnosis.urgency.toLowerCase() == 'high') ? 10 :
-                          (diagnosis.urgency.toLowerCase() == 'emergency') ? 20 : 3;
-          int newScore = ((profile.healthScore - decrement).clamp(0, 100) as int);
-          if (newScore != profile.healthScore) {
-            await firestoreService.updateUserProfile(userId, {'healthScore': newScore}).timeout(const Duration(seconds: 5));
-          }
-        }
-      } catch (e) { debugPrint('Health score update failed/timed out: $e'); }
-
+You are "SwasthMitra", a professional health companion. Reply using ONLY valid JSON matching the provided schema.
+TONE: Professional, calm, and caring.
+CONTEXT:
+- USER: ${_sanitizeText(userName, maxLen: 80)} (Age: $age, Gender: ${_sanitizeText(gender, maxLen: 40)})
+- SYMPTOMS: ${_sanitizeText(symptoms.join(', '), maxLen: 2000)}
+- PAST: ${_sanitizeText(historySummary, maxLen: 1500)}
+''';
+      final messages = [
+        {'role': 'system', 'content': 'You are a professional health companion. Respond ONLY in valid JSON matching clinical standards.'},
+        {'role': 'user', 'content': prompt},
+      ];
+      final res = await _callOpenRouter(messages, jsonMode: true);
+      DiagnosisResponse diagnosis = res.isNotEmpty ? _parseResponse(res, userName) : _getFallbackDiagnosis(userName);
+      await LocalStorageService().cacheLastDiagnosis(userId, diagnosis.toCacheMap());
+      unawaited(firestoreService.saveDiagnosis(DiagnosisRecord(id: '', userId: userId, condition: diagnosis.condition, severity: diagnosis.severity, description: diagnosis.description, recommendations: diagnosis.recommendations, timestamp: DateTime.now(), symptoms: symptoms,)).timeout(const Duration(seconds: 10)).catchError((e) {
+        if (e is! TimeoutException) debugPrint('Failed to save diagnosis: $e');
+      }));
       return diagnosis;
     } catch (e) {
       debugPrint('AI Service Error (analyzeSymptoms): $e');
+      final cached = LocalStorageService().getLastDiagnosis(userId);
+      if (cached != null) {
+        final restored = DiagnosisResponse.fromCacheMap(cached);
+        if (restored != null) return restored;
+      }
       return _getFallbackDiagnosis(userName);
     }
   }
@@ -159,87 +154,140 @@ class AIService {
     required String userQuery,
     required CompanionSession session,
   }) async {
-    try {
-      final historyContext = session.history.take(10).map((m) => "${m['role']}: ${m['message']}").join("\n");
-
-      final prompt = '''
-      ROLE: You are the "SwasthMitra Companion"—a warm, professional Clinical Companion.
-      PERSONALITY: Embody a supportive medical guide. You are patient, knowledgeable, and respectful.
-      CLINICAL MEMORY:
-      - Current Assessment: ${session.diagnosis}
-      - Key Clinical Notes: ${session.clinicalNotes.join('; ')}
-
-      GUIDELINES:
-      - Prioritize clinical safety.
-      - Maintain a professional yet warm tone. Avoid informal address like "beta".
-      - Use ${session.userName}'s name with respect.
-      
-      USER QUERY: "$userQuery"
-      ''';
-
-      final response = await _retryWithBackoff(() => model.generateContent([Content.text(prompt)]));
-      final botResponse = response.text?.trim() ?? "I'm right here with you, ${session.userName}. I'm listening.";
-      
-      await firestoreService.saveChatMessage(session.userId, "user", userQuery);
-      await firestoreService.saveChatMessage(session.userId, "bot", botResponse);
-
-      return botResponse;
-    } catch (e) {
-      debugPrint('AI Service Error (chatWithBuddy): $e');
-      return "I'm having a little trouble connecting right now, but I'm still here for you. Could you repeat that?";
+    final query = _sanitizeText(userQuery, maxLen: 3000);
+    
+    // STEP 3: Instant Local Response Layer (Zero Latency)
+    final trivialLower = query.toLowerCase().trim();
+    if (trivialLower == 'hi' || trivialLower == 'hello' || trivialLower == 'hey' || trivialLower == 'hi swasthmitra') {
+      final reply = "Hi 😊 I'm here with you, ${session.userName}. How are you feeling today?";
+      unawaited(_persistChatMessages(session.userId, query, reply));
+      return reply;
     }
+
+    if (query.isEmpty) {
+      return "I'm right here. What's on your mind?";
+    }
+
+    if (_apiKey.isEmpty) {
+      return "I'm here for you, but I'm having trouble connecting to my full intelligence right now. Let's try once more.";
+    }
+
+
+
+    const systemPrompt = '''
+ROLE: SwasthMitra Companion AI. You are a highly professional, emotionally intelligent, and helpful health assistant.
+TONE: Warm, professional, supportive.
+GUIDELINES:
+- Respond intelligently to ANY user input (greetings, casual talk, emotional support, general knowledge, or health queries).
+- NEVER ignore a valid message.
+- Be concise (under 100 words).
+- If the user is stressed, provide comforting, therapeutic support.
+- If medical, remain professional and encourage clinical care when appropriate.
+''';
+
+    final messages = [
+      {'role': 'system', 'content': systemPrompt},
+      ...session.history.map((m) => {
+        'role': m['role'] == 'bot' ? 'assistant' : 'user',
+        'content': (m['message'] ?? '').toString(),
+      }),
+      {'role': 'user', 'content': query},
+    ];
+
+    try {
+      final botResponse = await _callOpenRouter(messages);
+      if (botResponse.isNotEmpty) {
+        unawaited(_persistChatMessages(session.userId, query, botResponse));
+        return botResponse;
+      }
+    } catch (e) {
+      debugPrint('OpenRouter Buddy Chat Error: $e');
+    }
+
+    // Step 4/7: Global Fallback Response
+    return "I'm here with you 💛 I'm having a small connection issue, but I'm listening. Please tell me more.";
   }
 
   Future<List<String>> getSmartFollowUps({required CompanionSession session}) async {
+    if (_apiKey.isEmpty) {
+      return const ['How are you feeling now?', 'Want help with next steps?', 'Anything else on your mind?'];
+    }
+    final prompt =
+        'Generate exactly 3 short follow-up questions for ${_sanitizeText(session.userName, maxLen: 80)} about "${_sanitizeText(session.diagnosis, maxLen: 200)}". '
+        'Format: question1|question2|question3. No numbering.';
+    
+    final messages = [
+      {'role': 'system', 'content': 'You are a helpful assistant. Reply only with the questions formatted as requested.'},
+      {'role': 'user', 'content': prompt},
+    ];
+
     try {
-      final prompt = "As a family doctor companion, generate 3 warm, short follow-up questions for ${session.userName} regarding their '${session.diagnosis}'. Format: question1|question2|question3. No numbers.";
-      final response = await _retryWithBackoff(() => model.generateContent([Content.text(prompt)]));
-      return (response.text ?? "How are you feeling now?|Need help with the steps?|Anything else on your mind?").split('|').map((e) => e.trim()).toList();
+      final text = await _callOpenRouter(messages);
+      return text
+          .split('|')
+          .map((e) => _sanitizeText(e, maxLen: 200))
+          .where((e) => e.isNotEmpty)
+          .take(3)
+          .toList();
     } catch (e) {
-      return ["How can I help further?", "Any other concerns?", "Tell me more."];
+      debugPrint('getSmartFollowUps: $e');
+      return const ['How can I help further?', 'Any other concerns?', 'Tell me more.'];
     }
   }
 
   DiagnosisResponse _getFallbackDiagnosis(String userName) {
+    final n = _sanitizeText(userName, maxLen: 80);
     return DiagnosisResponse(
-      condition: "Wellness Check Needed",
-      severity: "mild",
-      description: "I'm carefully reviewing your symptoms, $userName. It seems like a little extra care and rest might be what you need right now.",
-      recommendations: ["Rest and hydrate", "Monitor symptoms closely", "Consult a professional if symptoms persist"],
-      urgency: "low",
+      condition: 'Wellness check',
+      severity: 'mild',
+      description:
+          "I'm carefully reviewing what you shared, ${n.isEmpty ? 'friend' : n}. In the meantime, rest, hydrate, and monitor how your symptoms change. If anything worsens quickly, please seek urgent in-person care.",
+      recommendations: const [
+        'Rest and hydrate',
+        'Monitor symptoms closely',
+        'Consult a clinician if symptoms persist or worsen',
+      ],
+      urgency: 'low',
       shouldConsultDoctor: true,
       isEmergency: false,
-      clinical_notes: []
+      clinical_notes: const [],
     );
   }
 
-  String _extractJson(String text) {
+  String _extractJsonObject(String text) {
     try {
-      final startIndex = text.indexOf('{');
-      final endIndex = text.lastIndexOf('}');
-      if (startIndex == -1 || endIndex == -1) return '';
-      return text.substring(startIndex, endIndex + 1);
-    } catch (e) { return ''; }
+      var cleanText = text.trim();
+      cleanText = cleanText.replaceAll(RegExp(r'```json\s*'), '').replaceAll(RegExp(r'```\s*'), '');
+      
+      try {
+        final bytes = utf8.encode(cleanText);
+        cleanText = utf8.decode(bytes, allowMalformed: true);
+      } catch (_) {}
+
+      final start = cleanText.indexOf('{');
+      final end = cleanText.lastIndexOf('}');
+      if (start == -1 || end == -1 || end <= start) return '';
+      return cleanText.substring(start, end + 1).trim();
+    } catch (e) {
+      return '';
+    }
   }
 
   DiagnosisResponse _parseResponse(String jsonString, String userName) {
     try {
-      final Map<String, dynamic> data = jsonDecode(jsonString);
-      return DiagnosisResponse(
-        condition: data['condition'] ?? 'General Concern',
-        severity: data['severity'] ?? 'mild',
-        description: data['description'] ?? "I'm here to support you through this, $userName.",
-        recommendations: List<String>.from(data['recommendations'] ?? ["Rest and monitor", "Stay hydrated"]),
-        urgency: data['urgency'] ?? 'low',
-        shouldConsultDoctor: data['shouldConsultDoctor'] ?? true,
-        isEmergency: data['isEmergency'] ?? false,
-        clinical_notes: List<String>.from(data['clinical_notes'] ?? []),
-        emotionalAnalysis: data['emotional_analysis'],
-        suggestedSpecialty: data['suggested_specialty'],
-      );
-    } catch (e) { 
+      final slice = _extractJsonObject(jsonString);
+      if (slice.isEmpty) {
+        return _getFallbackDiagnosis(userName);
+      }
+      final decoded = jsonDecode(slice);
+      if (decoded is! Map) {
+        return _getFallbackDiagnosis(userName);
+      }
+      final data = Map<String, dynamic>.from(decoded);
+      return DiagnosisResponse.fromValidatedMap(data, userName);
+    } catch (e) {
       debugPrint('JSON Parse Error: $e');
-      return _getFallbackDiagnosis(userName); 
+      return _getFallbackDiagnosis(userName);
     }
   }
 }
